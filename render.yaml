@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: openai-usage-dashboard
+    runtime: image
+    image:
+      url: https://github.com/satish-satpal-aspl/openai-usage-dashboard
+    plan: free
+    envVars:
+      - key: OPENAI_ADMIN_KEY
+        sync: false
+      - key: ALLOW_DEMO_MODE
+        value: "true"
+      - key: CACHE_TTL_SECONDS
+        value: "30"
+      - key: CORS_ORIGINS
+        value: "*"
