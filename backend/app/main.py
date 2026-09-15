@@ -16,8 +16,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from . import aggregate as agg
-from . import billing, demo, openai_admin as admin
-from .config import ALLOW_DEMO_MODE, CORS_ORIGINS, key_status, live_mode
+from . import billing, demo, openai_admin as admin, report as rpt
+from .auth import BasicAuthMiddleware, auth_enabled
+from .config import (ALLOW_DEMO_MODE, CORS_ORIGINS, accounts, key_status,
+                     live_mode, report_config, usable_accounts)
 from .excel_export import build_workbook
 from .pricing import get_pricing
 
@@ -32,6 +34,7 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dis
 app = FastAPI(title="OpenAI Usage Dashboard", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS,
                    allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(BasicAuthMiddleware)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -53,15 +56,17 @@ def _range(start: str | None, end: str | None) -> tuple[int, int, str, str]:
     return s_ts, e_ts, s.isoformat(), e.isoformat()
 
 
-async def _load(start: int, end: int, bucket: str, project_ids: list[str] | None):
-    """Fetch usage + costs + projects, live or demo, and the price sheet."""
+async def _load(start: int, end: int, bucket: str, project_ids: list[str] | None,
+                account_ids: list[str] | None = None):
+    """Fetch usage + costs + projects across every selected account, plus pricing."""
     pricing = await get_pricing()
-    if live_mode():
+    accs = usable_accounts(account_ids)
+    if accs:
         usage, costs, projects = await asyncio.gather(
-            admin.fetch_all_usage(start, end, bucket,
-                                  ["project_id", "api_key_id", "model"], project_ids),
-            admin.fetch_costs(start, end, ["line_item", "project_id"], project_ids),
-            admin.fetch_projects(),
+            admin.fetch_all_usage_multi(accs, start, end, bucket,
+                                        ["project_id", "api_key_id", "model"], project_ids),
+            admin.fetch_costs_multi(accs, start, end, ["line_item", "project_id"], project_ids),
+            admin.fetch_projects_multi(accs),
         )
         live = True
     else:
@@ -71,53 +76,71 @@ async def _load(start: int, end: int, bucket: str, project_ids: list[str] | None
         if project_ids:
             buckets = [{**b, "results": [r for r in b["results"]
                                          if r["project_id"] in project_ids]} for b in buckets]
-        usage = {"completions": buckets}
-        costs = demo.cost_buckets(start, end)
+        usage = {"completions": admin._tag(buckets, "demo")}
+        costs = admin._tag(demo.cost_buckets(start, end), "demo")
         if project_ids:
             costs = [{**b, "results": [r for r in b["results"]
                                        if r.get("project_id") in project_ids]} for b in costs]
-        projects = demo.projects()
+        projects = [{**p, "account_id": "demo", "account_label": "Demo"}
+                    for p in demo.projects()]
         live = False
     return usage, costs, projects, pricing, live
 
 
-async def _api_key_names(projects: list[dict]) -> dict[str, str]:
-    """key_id -> label. Best-effort: a project we can't read just yields no names."""
+async def _api_key_names(projects: list[dict],
+                         account_ids: list[str] | None = None) -> dict[str, str]:
+    """key_id -> label, across accounts. A project we can't read just yields no names."""
+    accs = usable_accounts(account_ids)
+    if accs:
+        return await admin.fetch_api_key_names(accs, projects)
     names: dict[str, str] = {}
-    if live_mode():
-        async def one(p):
-            try:
-                return await admin.fetch_project_api_keys(p["id"])
-            except admin.AdminAPIError:
-                return []
-        for keys in await asyncio.gather(*(one(p) for p in projects)):
-            for k in keys:
-                names[k["id"]] = k.get("name") or k["id"]
-    else:
-        for p in projects:
-            for k in demo.api_keys(p["id"]):
-                names[k["id"]] = k["name"]
+    for p in projects:
+        for k in demo.api_keys(p["id"]):
+            names[k["id"]] = k["name"]
     return names
 
 
 async def _payload(start: str | None, end: str | None, bucket: str,
-                   project_ids: list[str] | None) -> dict:
+                   project_ids: list[str] | None,
+                   account_ids: list[str] | None = None) -> dict:
     s_ts, e_ts, s_iso, e_iso = _range(start, end)
-    usage, costs, projects, pricing, live = await _load(s_ts, e_ts, bucket, project_ids)
+    usage, costs, projects, pricing, live = await _load(s_ts, e_ts, bucket,
+                                                       project_ids, account_ids)
     pm = pricing["models"]
 
     proj_names = {p["id"]: p.get("name") or p["id"] for p in projects}
-    key_names = await _api_key_names(projects)
+    acc_of_project = {p["id"]: p.get("account_id") for p in projects}
+    key_names = await _api_key_names(projects, account_ids)
+    selected = usable_accounts(account_ids) or list(accounts())
+    acc_labels = {a.id: a.label for a in accounts()} | {"demo": "Demo"}
 
     by_model = agg.unit_economics(agg.group(usage, pm, "model"), pm)
     by_project = agg.attach_names(agg.group(usage, pm, "project_id"), "project_id", proj_names)
     by_api_key = agg.attach_names(agg.group(usage, pm, "api_key_id"), "api_key_id", key_names)
 
+    by_account = agg.attach_names(agg.group(usage, pm, "account_id"),
+                                  "account_id", acc_labels)
+    # A selected account with no traffic still belongs in the table - an empty row
+    # is information, a missing row looks like the account was never queried.
+    present = {r["account_id"] for r in by_account}
+    by_account += [{"account_id": a.id, "name": a.label, "requests": 0,
+                    "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                    "audio_input_tokens": 0, "audio_output_tokens": 0, "est_cost": 0.0}
+                   for a in selected if a.usable and a.id not in present]
+    billed_by_account = {r["account_id"]: r["cost"] for r in agg.costs_group(costs, "account_id")}
+    for r in by_account:
+        r["billed_cost"] = billed_by_account.get(r["account_id"], 0.0)
+
     billed_by_project = {r["project_id"]: r["cost"] for r in agg.costs_group(costs, "project_id")}
     for r in by_project:
         r["billed_cost"] = billed_by_project.get(r["project_id"], 0.0)
+        r["account_id"] = acc_of_project.get(r["project_id"], "")
+        r["account_label"] = acc_labels.get(r["account_id"], "")
     for r in by_api_key:
         r["project_name"] = "-"
+
+    summary_report = rpt.build(costs, usage, pm, selected, report_config(),
+                               key_names, s_iso, e_iso)
 
     rate_card = sorted(
         ({"model": m,
@@ -131,6 +154,8 @@ async def _payload(start: str | None, end: str | None, bucket: str,
         "meta": {
             "start_date": s_iso, "end_date": e_iso, "bucket_width": bucket, "live": live,
             "pricing_source": pricing["source"],
+            "accounts": [a.public() for a in accounts()],
+            "selected_accounts": [a.id for a in selected],
             "pricing_fetched": datetime.fromtimestamp(pricing["fetched_at"],
                                                       tz=timezone.utc).isoformat(timespec="seconds"),
             "key_status": key_status(),
@@ -140,18 +165,24 @@ async def _payload(start: str | None, end: str | None, bucket: str,
         "cost_timeseries": agg.costs_timeseries(costs),
         "billed_cost": agg.costs_total(costs),
         "by_model": by_model,
+        "by_account": by_account,
         "by_project": by_project,
         "by_api_key": by_api_key,
         "cost_by_line_item": agg.costs_group(costs, "line_item"),
         "projects": [{"id": p["id"], "name": p.get("name") or p["id"],
-                      "status": p.get("status")} for p in projects],
+                      "status": p.get("status"), "account_id": p.get("account_id"),
+                      "account_label": p.get("account_label")} for p in projects],
         "rate_card": rate_card,
+        "report": summary_report,
     }
 
 
 async def _payload_cached(start: str | None, end: str | None, bucket: str,
-                          project_ids: list[str] | None, refresh: bool = False) -> dict:
-    key = (start, end, bucket, tuple(sorted(project_ids or ())))
+                          project_ids: list[str] | None,
+                          account_ids: list[str] | None = None,
+                          refresh: bool = False) -> dict:
+    key = (start, end, bucket, tuple(sorted(project_ids or ())),
+           tuple(sorted(account_ids or ())))
     now = time.monotonic()
 
     if not refresh:
@@ -161,7 +192,7 @@ async def _payload_cached(start: str | None, end: str | None, bucket: str,
             payload["meta"]["cache_age_seconds"] = round(now - hit[0], 1)
             return payload
 
-    payload = await _payload(start, end, bucket, project_ids)
+    payload = await _payload(start, end, bucket, project_ids, account_ids)
     payload["meta"]["cache_age_seconds"] = 0.0
     payload["meta"]["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -176,21 +207,29 @@ async def _payload_cached(start: str | None, end: str | None, bucket: str,
 async def health():
     pricing = await get_pricing()
     return {"ok": True, "live": live_mode(), "demo_allowed": ALLOW_DEMO_MODE,
-            "cache_ttl_seconds": CACHE_TTL,
+            "cache_ttl_seconds": CACHE_TTL, "auth_enabled": auth_enabled(),
             "key_status": key_status(), "pricing_source": pricing["source"],
             "priced_models": len(pricing["models"])}
 
 
+@app.get("/api/accounts")
+async def accounts_route():
+    """The configured organizations. Keys are never included."""
+    return [a.public() for a in accounts()]
+
+
 @app.get("/api/projects")
-async def projects_route():
-    if live_mode():
+async def projects_route(account_ids: list[str] | None = Query(None)):
+    accs = usable_accounts(account_ids)
+    if accs:
         try:
-            ps = await admin.fetch_projects()
+            ps = await admin.fetch_projects_multi(accs)
         except admin.AdminAPIError as e:
             raise HTTPException(e.status, e.message)
     else:
-        ps = demo.projects()
-    return [{"id": p["id"], "name": p.get("name") or p["id"], "status": p.get("status")}
+        ps = [{**p, "account_id": "demo", "account_label": "Demo"} for p in demo.projects()]
+    return [{"id": p["id"], "name": p.get("name") or p["id"], "status": p.get("status"),
+             "account_id": p.get("account_id"), "account_label": p.get("account_label")}
             for p in ps]
 
 
@@ -207,12 +246,29 @@ async def dashboard(
     end: str | None = Query(None, description="YYYY-MM-DD"),
     bucket_width: str = Query("1d", pattern="^(1m|1h|1d)$"),
     project_ids: list[str] | None = Query(None),
+    account_ids: list[str] | None = Query(None),
     refresh: bool = Query(False, description="bypass the server-side cache"),
 ):
     try:
-        return await _payload_cached(start, end, bucket_width, project_ids, refresh)
+        return await _payload_cached(start, end, bucket_width, project_ids,
+                                     account_ids, refresh)
     except admin.AdminAPIError as e:
         raise HTTPException(e.status, e.message)
+
+
+@app.get("/api/report")
+async def report_route(
+    start: str | None = Query(None, description="YYYY-MM-DD"),
+    end: str | None = Query(None, description="YYYY-MM-DD"),
+    account_ids: list[str] | None = Query(None),
+    refresh: bool = Query(False),
+):
+    """The credit/usage summary: top-ups, usage by client, balance, documents."""
+    try:
+        payload = await _payload_cached(start, end, "1d", None, account_ids, refresh)
+    except admin.AdminAPIError as e:
+        raise HTTPException(e.status, e.message)
+    return payload["report"]
 
 
 # ── billing ───────────────────────────────────────────────────────────────────
@@ -223,9 +279,10 @@ async def _cost_buckets(months: int) -> tuple[list[dict], list[dict]]:
     s_ts = int(datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc).timestamp())
     e_ts = int(datetime.combine(today + timedelta(days=1), datetime.min.time(),
                                 tzinfo=timezone.utc).timestamp())
-    if live_mode():
-        buckets = await admin.fetch_costs(s_ts, e_ts, ["project_id"])
-        projects = await admin.fetch_projects()
+    accs = usable_accounts()
+    if accs:
+        buckets = await admin.fetch_costs_multi(accs, s_ts, e_ts, ["project_id"])
+        projects = await admin.fetch_projects_multi(accs)
     else:
         buckets = demo.cost_buckets(s_ts, e_ts)
         projects = demo.projects()
@@ -289,9 +346,10 @@ async def export_xlsx(
     start: str | None = None, end: str | None = None,
     bucket_width: str = Query("1d", pattern="^(1m|1h|1d)$"),
     project_ids: list[str] | None = Query(None),
+    account_ids: list[str] | None = Query(None),
 ):
     try:
-        payload = await _payload_cached(start, end, bucket_width, project_ids)
+        payload = await _payload_cached(start, end, bucket_width, project_ids, account_ids)
     except admin.AdminAPIError as e:
         raise HTTPException(e.status, e.message)
     blob = build_workbook(payload)

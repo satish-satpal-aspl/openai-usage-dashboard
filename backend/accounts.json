@@ -1,0 +1,21 @@
+{
+  "_comment": "Account registry. Secrets live in .env only - key_env names the variable.",
+  "accounts": [
+    {
+      "id": "acct-hnb",
+      "label": "Acceltree - HNB",
+      "key_env": "OPENAI_ADMIN_KEY",
+      "org_id": "org-RtcappJmEyvr65CnojzlV4Sh",
+      "owner_email": "ai@acceltree.com",
+      "attribute_by": "project"
+    },
+    {
+      "id": "acct-legacy",
+      "label": "Acceltree Software Pvt. Ltd",
+      "key_env": "OPENAI_ADMIN_KEY_2",
+      "org_id": null,
+      "owner_email": "aiacceltreesoftwares@gmail.com",
+      "attribute_by": "api_key"
+    }
+  ]
+}

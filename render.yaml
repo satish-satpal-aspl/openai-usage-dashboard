@@ -8,6 +8,12 @@ services:
     envVars:
       - key: OPENAI_ADMIN_KEY
         sync: false
+      - key: OPENAI_ADMIN_KEY_2
+        sync: false
+      - key: DASHBOARD_USER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
       - key: ALLOW_DEMO_MODE
         value: "true"
       - key: CACHE_TTL_SECONDS

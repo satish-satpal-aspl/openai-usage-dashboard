@@ -1,0 +1,72 @@
+{
+  "_comment": "Drives the 'API Credit Usage Summary' sheet. Usage dollars always come from the live Costs API; everything here is the attribution/context layer you maintain by hand until the DB is wired in.",
+  "currency": "USD",
+
+  "client_mapping": {
+    "_comment": "account_id -> { project_id or api-key name -> client }. 'attribute_by' in accounts.json decides which is used.",
+    "acct-hnb": {
+      "proj_unapItxjgqoliVqhJHEkbIeZ": "HNB Life",
+      "proj_t6P95iylDtLURLA80qFk9raa": "Zain",
+      "proj_qoYznMo2nRyWobNetbXJscyJ": "Zain",
+      "proj_zQaTbeMXERv42kRJ9aApoCSl": "Zain",
+      "proj_ms1aYvdoQICVPhGpRF7wX2MO": "Smart Sure",
+      "proj_geCYrlsJXSTxfRgYBxOIxpRk": "Internal",
+      "proj_RSRnGSkSsFtUTJJJuOqB54wc": "Internal"
+    },
+    "acct-legacy": {
+      "_comment": "REVIEW THESE - names inferred from API key labels. Legacy account keeps every client in one project, so cost is apportioned by token spend per key.",
+      "HNB_Life": "HNB Life",
+      "HNBG_OCR": "HNB Life",
+      "handwritten": "HNB Life",
+      "zain": "Zain",
+      "VKYC-PBTB": "VKYC-PBTB",
+      "Ceylinco-bot": "Ceylinco",
+      "VOICE_BOT": "Voice Bot",
+      "Voice-bot": "Voice Bot",
+      "voice_bot": "Voice Bot",
+      "vbot": "Voice Bot",
+      "Onboarding": "Onboarding",
+      "sales": "Internal",
+      "accelbot": "Internal"
+    }
+  },
+  "unmapped_client": "Unattributed",
+
+  "top_ups": [
+    { "date": "2026-08-31", "account_id": "acct-hnb", "description": "Credit top-up", "amount": 50.0 },
+    { "date": "2026-09-10", "account_id": "acct-hnb", "description": "Credit top-up", "amount": 100.0 }
+  ],
+
+  "exclusions": [
+    {
+      "id": "incident-2026-09-03",
+      "label": "Unauthorized API activity (3 Sep 2026) - credit requested",
+      "account_id": "acct-hnb",
+      "project_id": "proj_unapItxjgqoliVqhJHEkbIeZ",
+      "date": "2026-09-03",
+      "baseline_retained": 3.2,
+      "note": "Compromised key key_96Ufuzurq0jQs5mK, revoked. See INCIDENT_2026-09-03.md. Day total less the ~$3.20/day baseline is held out of client usage pending OpenAI credit."
+    }
+  ],
+
+  "documents": {
+    "_comment": "Placeholder until DB access lands. month -> count.",
+    "source": "manually recorded",
+    "environments": {
+      "UAT": {
+        "2026-01": 188, "2026-02": 384, "2026-03": 389, "2026-04": 74,
+        "2026-05": 1225, "2026-06": 1219, "2026-07": 969, "2026-08": 478,
+        "2026-09": 83
+      },
+      "Production": {
+        "2026-07": 799, "2026-08": 10872, "2026-09": 5979
+      }
+    },
+    "client": "HNB Life"
+  },
+
+  "notes": [
+    "Usage figures are billed amounts from GET /v1/organization/costs, not estimates.",
+    "Zain usage is split across the Zain, Zain-UAT and Zain (second) projects."
+  ]
+}

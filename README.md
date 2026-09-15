@@ -73,15 +73,19 @@ from anywhere.
 - *Estimated cost by model* — directly labelled horizontal bars.
 
 **Tables** — Models (unit economics: $/1M in/out, avg $/call, cache hit rate),
-Projects (billed + estimated side by side), API keys, billed cost by line item,
-and the full live rate card with a filter box.
+Accounts, Projects (billed + estimated side by side), API keys, billed cost by
+line item, and the full live rate card with a filter box.
+
+**Usage report** — the client-facing credit summary: top-ups, usage by client and
+period, balance, disputed charges, documents processed. See below.
 
 **Filters** — 7D / 30D / 90D / MTD presets, custom from–to, granularity
-(daily / hourly / per-minute) and a project selector.
+(daily / hourly / per-minute), an account selector and a project selector.
 
 **Excel export** — the `Download Excel` button hits `/api/export.xlsx` with the
-current filters and returns an 8-sheet workbook: Summary · Daily Usage · By Model ·
-By Project · By API Key · Billed Costs · Cost by Line Item · Model Rate Card.
+current filters and returns a 10-sheet workbook: Usage Summary · Summary ·
+Daily Usage · By Model · By Account · By Project · By API Key · Billed Costs ·
+Cost by Line Item · Model Rate Card.
 Every sheet has frozen headers, autofilters, tuned column widths and real Excel
 number formats (currency, thousands separators, percentages) — no cleanup needed.
 
@@ -116,6 +120,55 @@ refresh=true (bypass)  2.99s   cache_age=0.0s
 
 Tune with `CACHE_TTL_SECONDS` in `backend/.env`. Note OpenAI's usage aggregation
 has its own upstream lag of minutes, so polling faster than ~30s gains nothing.
+
+---
+
+## Multiple accounts
+
+The dashboard reads any number of OpenAI organizations at once and merges them
+into one view. Accounts are declared in `backend/accounts.json`; the Admin keys
+themselves stay in `backend/.env`, named by `key_env`:
+
+```jsonc
+{
+  "accounts": [
+    { "id": "acct-hnb",    "label": "Acceltree - HNB",
+      "key_env": "OPENAI_ADMIN_KEY",   "attribute_by": "project" },
+    { "id": "acct-legacy", "label": "Acceltree Software Pvt. Ltd",
+      "key_env": "OPENAI_ADMIN_KEY_2", "attribute_by": "api_key" }
+  ]
+}
+```
+
+Every usage, cost and project row is tagged with the account it came from, so the
+**Accounts** tab, the account filter and the `By Account` sheet all work without
+each org having to be queried separately. An org whose key is missing or is a
+project key is shown as unusable rather than silently dropped.
+
+---
+
+## Usage report — credits, clients, balance
+
+The **Usage report** tab (and the `Usage Summary` sheet, the first tab of the
+workbook) is the client-facing credit summary: top-ups, usage split by client and
+period, balance remaining, disputed charges held out, and documents processed.
+
+Dollar figures are billed amounts from the Costs API. Everything OpenAI cannot
+tell us lives in `backend/report_config.json`:
+
+| Key | What it does |
+|---|---|
+| `client_mapping` | account → project id (or API-key name) → client |
+| `top_ups` | credit top-ups; the report splits periods at each of these dates |
+| `exclusions` | charges held out of client usage, e.g. a disputed incident. `baseline_retained` keeps that day's normal spend with the client |
+| `documents` | documents processed per month per environment — placeholder until the DB is wired in |
+
+**Two attribution styles.** `attribute_by: "project"` is exact: the Costs API
+groups by `project_id`, so each client's dollars are measured. `attribute_by:
+"api_key"` is for an org that keeps every client in a single project — the Costs
+API cannot group by API key, so that project's daily cost is apportioned across
+keys by their token spend. Apportioned clients are marked `*` in both the UI and
+the workbook, and the report says so in its notes.
 
 ---
 
@@ -195,13 +248,18 @@ forces a re-fetch. Model IDs are resolved leniently: `gpt-4o-2024-08-06` and
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/health` | key status (never echoes the key), live/demo, pricing source |
+| `GET /api/accounts` | configured organizations and their key health |
 | `GET /api/dashboard` | everything the UI renders |
-| `GET /api/projects` | project list |
+| `GET /api/report` | the credit/usage summary (top-ups, clients, balance) |
+| `GET /api/projects` | project list, across accounts |
 | `GET /api/pricing` | live rate card (`?refresh=true` to force) |
 | `GET /api/export.xlsx` | the workbook |
 
+`/api/health` is always reachable (platform health checks); every other path is
+behind basic auth when `DASHBOARD_PASSWORD` is set.
+
 Shared params: `start`, `end` (`YYYY-MM-DD`), `bucket_width` (`1d`\|`1h`\|`1m`),
-repeatable `project_ids`. Range is capped at 366 days.
+repeatable `project_ids` and `account_ids`. Range is capped at 366 days.
 
 ---
 
@@ -231,7 +289,12 @@ repeatable `project_ids`. Range is capped at 366 days.
    - **Plan:** Free
    - **Build Command:** (uses Dockerfile, no override needed)
    - **Start Command:** (uses Dockerfile CMD, no override needed)
-4. Add environment variable: `OPENAI_ADMIN_KEY` = your `sk-admin-...` key.
+4. Add environment variables:
+   - `OPENAI_ADMIN_KEY` = your `sk-admin-...` key (first organization)
+   - `OPENAI_ADMIN_KEY_2` = the second organization's Admin key, if you have one
+   - `DASHBOARD_PASSWORD` = a password. **Set this.** Without it the service is
+     open to anyone with the URL, and it serves your organization's spend,
+     project names and per-client billing. `DASHBOARD_USER` defaults to `admin`.
 5. Deploy. First build takes ~2-3 min. The service spins down after 15 min idle.
 
 Alternatively, use `render.yaml` for Blueprint deploy:

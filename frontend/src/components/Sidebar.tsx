@@ -55,6 +55,22 @@ export const ICONS = {
       <path d="M6.5 15h4" />
     </svg>
   ),
+  report: (
+    <svg {...s}>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+      <path d="M14 3v5h5" />
+      <path d="M9 13h6" />
+      <path d="M9 17h4" />
+    </svg>
+  ),
+  accounts: (
+    <svg {...s}>
+      <path d="M3 21v-1.5A4.5 4.5 0 0 1 7.5 15h3A4.5 4.5 0 0 1 15 19.5V21" />
+      <circle cx="9" cy="8" r="3.4" />
+      <path d="M17 21v-1.2a4 4 0 0 0-2.4-3.6" />
+      <path d="M15.2 4.6a3.4 3.4 0 0 1 0 6.5" />
+    </svg>
+  ),
   rates: (
     <svg {...s}>
       <rect x="3" y="4" width="18" height="16" rx="2" />

@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from .config import OPENAI_ADMIN_KEY, OPENAI_BASE
+from .config import OPENAI_BASE
 
 # Bucket-width limits imposed by the API (max buckets per page).
 BUCKET_LIMITS = {"1m": 1440, "1h": 168, "1d": 31}
@@ -36,8 +36,8 @@ class AdminAPIError(RuntimeError):
         super().__init__(f"[{status}] {message}")
 
 
-def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {OPENAI_ADMIN_KEY}",
+def _headers(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}",
             "Content-Type": "application/json"}
 
 
@@ -58,10 +58,11 @@ def _flatten(params: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
-async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any]) -> dict:
+async def _get(client: httpx.AsyncClient, key: str, path: str,
+               params: dict[str, Any]) -> dict:
     for attempt in range(4):
         r = await client.get(f"{OPENAI_BASE}{path}", params=_flatten(params),
-                             headers=_headers(), timeout=60.0)
+                             headers=_headers(key), timeout=60.0)
         if r.status_code == 200:
             return r.json()
         if r.status_code in (429, 500, 502, 503, 504) and attempt < 3:
@@ -77,13 +78,13 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any]) -> 
     raise AdminAPIError(500, "exhausted retries")
 
 
-async def _paginate(client: httpx.AsyncClient, path: str, params: dict[str, Any],
-                    max_pages: int = 40) -> list[dict]:
+async def _paginate(client: httpx.AsyncClient, key: str, path: str,
+                    params: dict[str, Any], max_pages: int = 40) -> list[dict]:
     """Walk `next_page` and return every bucket across all pages."""
     buckets: list[dict] = []
     page: str | None = None
     for _ in range(max_pages):
-        body = await _get(client, path, {**params, "page": page})
+        body = await _get(client, key, path, {**params, "page": page})
         buckets.extend(body.get("data") or [])
         if not body.get("has_more"):
             break
@@ -93,7 +94,7 @@ async def _paginate(client: httpx.AsyncClient, path: str, params: dict[str, Any]
     return buckets
 
 
-async def fetch_usage(kind: str, start: int, end: int, bucket_width: str = "1d",
+async def fetch_usage(key: str, kind: str, start: int, end: int, bucket_width: str = "1d",
                       group_by: Iterable[str] | None = None,
                       project_ids: Iterable[str] | None = None,
                       models: Iterable[str] | None = None) -> list[dict]:
@@ -108,10 +109,10 @@ async def fetch_usage(kind: str, start: int, end: int, bucket_width: str = "1d",
         "models": list(models) if models else None,
     }
     async with httpx.AsyncClient() as client:
-        return await _paginate(client, f"/organization/usage/{kind}", params)
+        return await _paginate(client, key, f"/organization/usage/{kind}", params)
 
 
-async def fetch_costs(start: int, end: int,
+async def fetch_costs(key: str, start: int, end: int,
                       group_by: Iterable[str] | None = ("line_item", "project_id"),
                       project_ids: Iterable[str] | None = None) -> list[dict]:
     """Billed costs straight from OpenAI. bucket_width is 1d only."""
@@ -124,15 +125,15 @@ async def fetch_costs(start: int, end: int,
         "project_ids": list(project_ids) if project_ids else None,
     }
     async with httpx.AsyncClient() as client:
-        return await _paginate(client, "/organization/costs", params)
+        return await _paginate(client, key, "/organization/costs", params)
 
 
-async def fetch_projects() -> list[dict]:
+async def fetch_projects(key: str) -> list[dict]:
     out: list[dict] = []
     after: str | None = None
     async with httpx.AsyncClient() as client:
         for _ in range(20):
-            body = await _get(client, "/organization/projects",
+            body = await _get(client, key, "/organization/projects",
                               {"limit": 100, "after": after, "include_archived": True})
             data = body.get("data") or []
             out.extend(data)
@@ -142,12 +143,12 @@ async def fetch_projects() -> list[dict]:
     return out
 
 
-async def fetch_project_api_keys(project_id: str) -> list[dict]:
+async def fetch_project_api_keys(key: str, project_id: str) -> list[dict]:
     out: list[dict] = []
     after: str | None = None
     async with httpx.AsyncClient() as client:
         for _ in range(20):
-            body = await _get(client, f"/organization/projects/{project_id}/api_keys",
+            body = await _get(client, key, f"/organization/projects/{project_id}/api_keys",
                               {"limit": 100, "after": after})
             data = body.get("data") or []
             out.extend(data)
@@ -157,13 +158,14 @@ async def fetch_project_api_keys(project_id: str) -> list[dict]:
     return out
 
 
-async def fetch_all_usage(start: int, end: int, bucket_width: str,
+async def fetch_all_usage(key: str, start: int, end: int, bucket_width: str,
                           group_by: Iterable[str] | None,
                           project_ids: Iterable[str] | None) -> dict[str, list[dict]]:
     """All usage kinds concurrently. A kind the org never used may 404 - tolerate it."""
     async def one(kind: str):
         try:
-            return kind, await fetch_usage(kind, start, end, bucket_width, group_by, project_ids)
+            return kind, await fetch_usage(key, kind, start, end, bucket_width,
+                                           group_by, project_ids)
         except AdminAPIError as e:
             if e.status in (404, 400):
                 return kind, []
@@ -171,3 +173,86 @@ async def fetch_all_usage(start: int, end: int, bucket_width: str,
 
     results = await asyncio.gather(*(one(k) for k in USAGE_KINDS))
     return dict(results)
+
+
+# ── multi-account fan-out ─────────────────────────────────────────────────────
+def _tag(buckets: list[dict], account_id: str) -> list[dict]:
+    """Stamp every result row with the account it came from.
+
+    Buckets from different orgs are merged into one series downstream, so the
+    rows have to carry their origin or attribution is lost.
+    """
+    for b in buckets:
+        for r in b.get("results") or []:
+            r["account_id"] = account_id
+    return buckets
+
+
+def merge_buckets(per_account: list[list[dict]]) -> list[dict]:
+    """Merge same-timestamp buckets from several orgs into a single series."""
+    merged: dict[tuple, dict] = {}
+    for buckets in per_account:
+        for b in buckets:
+            key = (int(b.get("start_time") or 0), int(b.get("end_time") or 0))
+            slot = merged.get(key)
+            if slot is None:
+                merged[key] = {**b, "results": list(b.get("results") or [])}
+            else:
+                slot["results"].extend(b.get("results") or [])
+    return sorted(merged.values(), key=lambda b: int(b.get("start_time") or 0))
+
+
+async def fetch_costs_multi(accounts: Iterable[Any], start: int, end: int,
+                            group_by: Iterable[str] | None = ("line_item", "project_id"),
+                            project_ids: Iterable[str] | None = None) -> list[dict]:
+    accounts = list(accounts)
+    group_by = list(group_by) if group_by else None
+    results = await asyncio.gather(*(
+        fetch_costs(a.key, start, end, group_by, project_ids) for a in accounts))
+    return merge_buckets([_tag(b, a.id) for a, b in zip(accounts, results)])
+
+
+async def fetch_all_usage_multi(accounts: Iterable[Any], start: int, end: int,
+                                bucket_width: str, group_by: Iterable[str] | None,
+                                project_ids: Iterable[str] | None) -> dict[str, list[dict]]:
+    accounts = list(accounts)
+    group_by = list(group_by) if group_by else None
+    per_account = await asyncio.gather(*(
+        fetch_all_usage(a.key, start, end, bucket_width, group_by, project_ids)
+        for a in accounts))
+    out: dict[str, list[dict]] = {}
+    for kind in USAGE_KINDS:
+        out[kind] = merge_buckets([_tag(d.get(kind) or [], a.id)
+                                   for a, d in zip(accounts, per_account)])
+    return out
+
+
+async def fetch_projects_multi(accounts: Iterable[Any]) -> list[dict]:
+    accounts = list(accounts)
+    results = await asyncio.gather(*(fetch_projects(a.key) for a in accounts))
+    out: list[dict] = []
+    for a, projects in zip(accounts, results):
+        for p in projects:
+            out.append({**p, "account_id": a.id, "account_label": a.label})
+    return out
+
+
+async def fetch_api_key_names(accounts: Iterable[Any],
+                              projects: list[dict]) -> dict[str, str]:
+    """key_id -> label, across every account. A project we can't read yields nothing."""
+    by_id = {a.id: a for a in accounts}
+
+    async def one(p: dict):
+        acc = by_id.get(p.get("account_id"))
+        if not acc:
+            return []
+        try:
+            return await fetch_project_api_keys(acc.key, p["id"])
+        except AdminAPIError:
+            return []
+
+    names: dict[str, str] = {}
+    for keys in await asyncio.gather(*(one(p) for p in projects)):
+        for k in keys:
+            names[k["id"]] = k.get("name") or k["id"]
+    return names

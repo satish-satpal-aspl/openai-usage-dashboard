@@ -65,6 +65,9 @@ export function ModelTable({ rows }: { rows: ModelRow[] }) {
 }
 
 export function ProjectTable({ rows }: { rows: ProjectRow[] }) {
+  // Two orgs can each hold a project called "Default project" - show the owner
+  // column only when there is actually more than one org in play.
+  const multi = new Set(rows.map((r) => r.account_id).filter(Boolean)).size > 1
   return (
     <Panel
       title="Projects"
@@ -73,6 +76,7 @@ export function ProjectTable({ rows }: { rows: ProjectRow[] }) {
       <table>
         <thead>
           <tr>
+            {multi && <th>Account</th>}
             <th>Project</th>
             <th className="num">Calls</th>
             <th className="num">Input</th>
@@ -85,6 +89,7 @@ export function ProjectTable({ rows }: { rows: ProjectRow[] }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.project_id}>
+              {multi && <td className="muted">{r.account_label}</td>}
               <td>{r.name}<div className="muted" style={{ fontSize: 11 }}>{r.project_id}</div></td>
               <td className="num">{int(r.requests)}</td>
               <td className="num">{int(r.input_tokens)}</td>

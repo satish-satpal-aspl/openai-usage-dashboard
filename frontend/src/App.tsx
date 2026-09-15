@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { CostTrend, ModelSplit, RequestTrend, TokenVolume } from './components/Charts'
 import { BillingTab } from './components/Billing'
+import { AccountTable, ReportTab } from './components/Report'
 import { ICONS, Sidebar, useHashTab, type TabDef } from './components/Sidebar'
 import {
   ApiKeyTable, BilledTrendTable, LineItemTable, ModelTable, ProjectTable, RateCard,
@@ -18,7 +19,8 @@ const PRESETS = [
   { label: 'MTD', start: monthStart, end: today },
 ]
 
-const TAB_IDS = ['overview', 'models', 'projects', 'keys', 'costs', 'billing', 'rates'] as const
+const TAB_IDS = ['overview', 'report', 'accounts', 'models', 'projects', 'keys',
+                 'costs', 'billing', 'rates'] as const
 
 /* Usage data lands with some lag upstream, so sub-minute polling just burns rate
    limit. 60s is the default; the server also caches for CACHE_TTL_SECONDS. */
@@ -52,7 +54,7 @@ function Tile({ label, value, sub }: { label: string; value: string; sub?: strin
 
 export default function App() {
   const [filters, setFilters] = useState<Filters>({
-    start: isoDaysAgo(29), end: today(), bucket: '1d', projectIds: [],
+    start: isoDaysAgo(29), end: today(), bucket: '1d', projectIds: [], accountIds: [],
   })
   const [mode, setMode] = useThemeMode()
   const [tab, setTab] = useHashTab([...TAB_IDS], 'overview')
@@ -97,6 +99,10 @@ export default function App() {
   const tabs: TabDef[] = [
     { id: 'overview', label: 'Overview', icon: ICONS.overview,
       hint: t ? `${compact(t.requests)} calls` : undefined },
+    { id: 'report', label: 'Usage report', icon: ICONS.report,
+      hint: data ? `${usd(data.report.usage_total, 2)} billable` : undefined },
+    { id: 'accounts', label: 'Accounts', icon: ICONS.accounts,
+      hint: data ? `${data.meta.accounts.length} orgs` : undefined },
     { id: 'models', label: 'Models', icon: ICONS.models,
       hint: data ? `${data.by_model.length} in use` : undefined },
     { id: 'projects', label: 'Projects', icon: ICONS.projects,
@@ -201,12 +207,34 @@ export default function App() {
             <option value="1m">Per minute</option>
           </select>
         </div>
+        {(data?.meta.accounts.length ?? 0) > 1 && (
+          <div className="field">
+            <label htmlFor="account">Account</label>
+            <select id="account" value={filters.accountIds[0] ?? ''}
+                    onChange={(e) => set({
+                      accountIds: e.target.value ? [e.target.value] : [],
+                      projectIds: [],   // project ids belong to one org
+                    })}>
+              <option value="">All accounts</option>
+              {data?.meta.accounts.map((a) => (
+                <option key={a.id} value={a.id} disabled={!a.usable}>
+                  {a.label}{a.usable ? '' : ' (key unusable)'}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="field">
           <label htmlFor="project">Project</label>
           <select id="project" value={filters.projectIds[0] ?? ''}
                   onChange={(e) => set({ projectIds: e.target.value ? [e.target.value] : [] })}>
             <option value="">All projects</option>
-            {data?.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {data?.projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {(data.meta.accounts.length > 1 && !filters.accountIds.length && p.account_label)
+                  ? `${p.account_label} · ${p.name}` : p.name}
+              </option>
+            ))}
           </select>
         </div>
         <div className="spacer" />
@@ -241,6 +269,8 @@ export default function App() {
           {data && t && (
             <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} tabIndex={-1}>
               {tab === 'overview' && <OverviewTab data={data} days={days} />}
+              {tab === 'report' && <ReportTab data={data} />}
+              {tab === 'accounts' && <AccountsTab data={data} />}
               {tab === 'models' && <ModelsTab data={data} />}
               {tab === 'projects' && <ProjectsTab data={data} />}
               {tab === 'keys' && <ApiKeyTable rows={data.by_api_key} />}
@@ -280,6 +310,64 @@ function OverviewTab({ data, days }: { data: Dashboard; days: number }) {
       <div className="grid-2">
         <TokenVolume rows={data.timeseries} />
         <RequestTrend rows={data.timeseries} />
+      </div>
+    </>
+  )
+}
+
+function AccountsTab({ data }: { data: Dashboard }) {
+  const accs = data.meta.accounts
+  const top = [...data.by_account].sort((a, b) => b.billed_cost - a.billed_cost)[0]
+  return (
+    <>
+      <div className="tiles">
+        <Tile label="Accounts configured" value={String(accs.length)}
+              sub={`${accs.filter((a) => a.usable).length} with working Admin keys`} />
+        <Tile label="Billed across accounts" value={usd(data.billed_cost, 2)} />
+        <Tile label="Highest spend" value={top ? top.name : '—'}
+              sub={top ? usd(top.billed_cost, 2) : undefined} />
+      </div>
+
+      {accs.some((a) => !a.usable) && (
+        <div className="banner warn">
+          <span className="dot" />
+          <div>
+            <strong>Some accounts are not being read — </strong>
+            {accs.filter((a) => !a.usable).map((a) => a.message).join(' ')}
+          </div>
+        </div>
+      )}
+
+      <AccountTable rows={data.by_account} />
+
+      <div className="panel">
+        <h2>Configuration</h2>
+        <p className="caption">
+          Accounts come from <code>backend/accounts.json</code>; each one reads its Admin key
+          from the named environment variable in <code>backend/.env</code>. Keys never reach
+          the browser.
+        </p>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th><th>Owner</th><th>Key variable</th>
+                <th>Client attribution</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accs.map((a) => (
+                <tr key={a.id}>
+                  <td>{a.label}{a.org_id && <div className="muted">{a.org_id}</div>}</td>
+                  <td className="muted">{a.owner_email ?? '—'}</td>
+                  <td><code>{a.key_env}</code></td>
+                  <td>{a.attribute_by === 'api_key' ? 'by API key (apportioned)' : 'by project'}</td>
+                  <td>{a.usable ? 'Admin key OK' : a.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </>
   )
