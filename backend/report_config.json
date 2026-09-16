@@ -39,11 +39,11 @@
     { "date": "2026-08-11", "account_id": "acct-hnb", "description": "Credit top-up (inv 2VSVCOB1-0005)", "amount": 50.0 },
     { "date": "2026-08-17", "account_id": "acct-hnb", "description": "Credit top-up (inv 2VSVCOB1-0008)", "amount": 100.0 },
     { "date": "2026-08-31", "account_id": "acct-hnb", "description": "Credit top-up (inv 2VSVCOB1-0010)", "amount": 50.0 },
-    { "date": "2026-09-01", "account_id": "acct-legacy", "description": "Credit top-up (inv CE4CF0B6-0006, invoice still OPEN/unpaid)", "amount": 22.08 },
     { "date": "2026-09-10", "account_id": "acct-hnb", "description": "Credit top-up (inv 2VSVCOB1-0014)", "amount": 100.0 }
   ],
 
   "_top_ups_excluded": [
+    { "date": "2026-09-01", "account_id": "acct-legacy", "description": "inv CE4CF0B6-0006 ($22.08) - EXCLUDED, invoice still open/unpaid and reads as an arrears usage bill rather than a credit purchase", "amount": 22.08 },
     { "date": "2026-09-03", "account_id": "acct-hnb", "description": "Auto top-up triggered by the 3 Sep unauthorized activity (inv 2VSVCOB1-0013) - EXCLUDED, credit requested", "amount": 340.0 }
   ],
 
