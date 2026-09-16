@@ -283,22 +283,31 @@ repeatable `project_ids` and `account_ids`. Range is capped at 366 days.
 
 ## Deploy to Render (Free Tier)
 
-1. Fork or push this repo to your GitHub account.
-2. Go to [render.com](https://render.com) → **New Web Service** → connect the repo.
-3. Render auto-detects the `Dockerfile`. Settings:
-   - **Plan:** Free
-   - **Build Command:** (uses Dockerfile, no override needed)
-   - **Start Command:** (uses Dockerfile CMD, no override needed)
-4. Add environment variables:
-   - `OPENAI_ADMIN_KEY` = your `sk-admin-...` key (first organization)
-   - `OPENAI_ADMIN_KEY_2` = the second organization's Admin key, if you have one
-   - `DASHBOARD_PASSWORD` = a password. **Set this.** Without it the service is
-     open to anyone with the URL, and it serves your organization's spend,
-     project names and per-client billing. `DASHBOARD_USER` defaults to `admin`.
-5. Deploy. First build takes ~2-3 min. The service spins down after 15 min idle.
+Canonical repository: **`Acceltree-Software/openai-account-management`** (private).
 
-Alternatively, use `render.yaml` for Blueprint deploy:
-```bash
-gh repo create your-user/openai-usage-dashboard --template satish-satpal-aspl/openai-usage-dashboard
-# Then connect the new repo on Render → Blueprints
-```
+1. [render.com](https://render.com) → **New Web Service** → connect the repo.
+   Render needs access to the Acceltree-Software org: if the repo does not
+   appear, use *Configure account* on the GitHub connection and grant it.
+2. Render detects the `Dockerfile`. Runtime **Docker**, branch `main`, plan Free
+   — everything else is in `render.yaml`.
+3. Set the environment variables (Environment → Add):
+
+   | Key | Notes |
+   |---|---|
+   | `OPENAI_ADMIN_KEY` | first organization's `sk-admin-…` |
+   | `OPENAI_ADMIN_KEY_2` | second organization's key |
+   | `DASHBOARD_PASSWORD` | **required.** Without it the service returns 503 rather than serving org spend unauthenticated |
+   | `DASHBOARD_USER` | optional, defaults to `admin` |
+
+4. Deploy. First build takes ~2–3 min; the free plan sleeps after 15 min idle.
+
+Health checks hit `/api/health`, which stays reachable without credentials by
+design. Every other route requires the password.
+
+### Repointing an existing service
+
+A service already connected to another repository keeps building from it —
+changing `render.yaml` does not move it. Go to **Settings → Build & Deploy →
+Repository → Update**, pick this repo, then **Manual Deploy → Deploy latest
+commit**. Environment variables are attached to the service, not the repo, so
+they survive the switch.

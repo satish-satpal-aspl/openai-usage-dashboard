@@ -1,11 +1,16 @@
 services:
   - type: web
     name: openai-usage-dashboard
-    runtime: image
-    image:
-      url: https://github.com/satish-satpal-aspl/openai-usage-dashboard
+    runtime: docker
+    repo: https://github.com/Acceltree-Software/openai-account-management
+    branch: main
+    dockerfilePath: ./Dockerfile
     plan: free
+    # /api/health is the one route left open when DASHBOARD_PASSWORD is set,
+    # so Render can health-check without credentials.
+    healthCheckPath: /api/health
     envVars:
+      # Secrets are entered in the Render dashboard, never committed.
       - key: OPENAI_ADMIN_KEY
         sync: false
       - key: OPENAI_ADMIN_KEY_2
@@ -15,7 +20,7 @@ services:
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: ALLOW_DEMO_MODE
-        value: "true"
+        value: "false"
       - key: CACHE_TTL_SECONDS
         value: "30"
       - key: CORS_ORIGINS
